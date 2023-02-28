@@ -1085,11 +1085,10 @@ public:
   SPIRVType *getCompType() const { return CompType; }
   SPIRVValue *getRows() const { return Args[0]; }
   SPIRVValue *getColumns() const { return Args[1]; }
-  SPIRVValue *getLayout() const { return Args[2]; }
-  SPIRVValue *getScope() const { return Args[3]; }
-  SPIRVValue *getUse() const { return Args.size() > 4 ? Args[4] : nullptr; }
+  SPIRVValue *getScope() const { return Args[2]; }
+  SPIRVValue *getUse() const { return Args[3]; }
   SPIRVValue *getComponentTypeInterpretation() const {
-    return Args.size() > 5 ? Args[5] : nullptr;
+    return Args.size() > 4 ? Args[4] : nullptr;
   }
 };
 

@@ -3324,14 +3324,12 @@ class SPIRVJointMatrixINTELInst : public SPIRVJointMatrixINTELInstBase {
   typedef SPIRVInstTemplate<SPIRVJointMatrixINTELInst, internal::Op##x##INTEL, \
                             __VA_ARGS__>                                       \
       SPIRV##x##INTEL;
-_SPIRV_OP(JointMatrixLoad, true, 6, true)
-_SPIRV_OP(JointMatrixStore, false, 5, true)
-_SPIRV_OP(JointMatrixMad, true, 7)
-_SPIRV_OP(JointMatrixSUMad, true, 7)
-_SPIRV_OP(JointMatrixUSMad, true, 7)
-_SPIRV_OP(JointMatrixUUMad, true, 7)
-// TODO: move to SPIRVJointMatrixINTELWorkItemInst
-_SPIRV_OP(JointMatrixWorkItemLength, true, 4)
+_SPIRV_OP(JointMatrixLoad, true, 5, true)
+_SPIRV_OP(JointMatrixStore, false, 4, true)
+_SPIRV_OP(JointMatrixMad, true, 6)
+_SPIRV_OP(JointMatrixSUMad, true, 6)
+_SPIRV_OP(JointMatrixUSMad, true, 6)
+_SPIRV_OP(JointMatrixUUMad, true, 6)
 #undef _SPIRV_OP
 
 class SPIRVJointMatrixINTELWorkItemInst : public SPIRVJointMatrixINTELInstBase {
@@ -3345,6 +3343,7 @@ protected:
   typedef SPIRVInstTemplate<SPIRVJointMatrixINTELWorkItemInst,                 \
                             internal::Op##x##INTEL, __VA_ARGS__>               \
       SPIRV##x##INTEL;
+_SPIRV_OP(JointMatrixWorkItemLength, true, 4)
 _SPIRV_OP(JointMatrixGetElementCoord, true, 5)
 #undef _SPIRV_OP
 
