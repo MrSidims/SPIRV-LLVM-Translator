@@ -168,12 +168,6 @@ class SPIRVTypeScavenger {
   /// Retrieve the list of typing rules for an instruction.
   void getTypeRules(Instruction &I, SmallVectorImpl<TypeRule> &Rules);
 
-  /// Get the best guess for the type of the value, applying any type rules to
-  /// the return value of an instruction that exist. The return type may refer
-  /// to type variables that have yet to be resolved, if the type rules are
-  /// insufficient to establish a typed pointer type for the instruction.
-  Type *getTypeAfterRules(Value *V);
-
   /// Enforce that the pointer element types of all operands of the instruction
   /// matches the type that the instruction itself requires. If a pointer
   /// element type of one of the operands is deferred, this will type the use
@@ -220,6 +214,13 @@ public:
   /// Get the deduced function type for a function, with pointer types replaced
   /// with TypedPointerTypes (maybe including type variables).
   FunctionType *getFunctionType(Function *F);
+
+  /// Get the best guess for the type of the value, applying any type rules to
+  /// the return value of an instruction that exist. The return type may refer
+  /// to type variables that have yet to be resolved, if the type rules are
+  /// insufficient to establish a typed pointer type for the instruction.
+  Type *getTypeAfterRules(Value *V);
+
 };
 
 #endif // SPIRVTYPESCAVENGER_H

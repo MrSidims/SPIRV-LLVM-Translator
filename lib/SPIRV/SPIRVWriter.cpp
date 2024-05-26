@@ -2116,6 +2116,12 @@ LLVMToSPIRVBase::transValueWithoutDecoration(Value *V, SPIRVBasicBlock *BB,
   if (CreateForward)
     return mapValue(V, BM->addForward(transScavengedType(V)));
 
+  if (BM->isAllowedToUseExtension(ExtensionID::SPV_INTEL_cache_controls)) {
+    if (auto *Inst = dyn_cast<Instruction>(V))
+      if (auto *IDecoMD = Inst->getMetadata(SPIRV_MD_INTEL_CACHE_DECORATIONS))
+        prepareCacheControlsTranslation(IDecoMD, Inst, BB);
+  }
+
   if (StoreInst *ST = dyn_cast<StoreInst>(V)) {
     if (ST->isAtomic())
       return transAtomicStore(ST, BB);
@@ -3029,6 +3035,8 @@ bool LLVMToSPIRVBase::transDecoration(Value *V, SPIRVValue *BV) {
       transMemAliasingINTELDecorations(Inst, BV);
     if (auto *IDecoMD = Inst->getMetadata(SPIRV_MD_DECORATIONS))
       transMetadataDecorations(IDecoMD, BV);
+//    if (auto *IDecoMD = Inst->getMetadata(SPIRV_MD_INTEL_CACHE_DECORATIONS))
+//      transCacheControlINTELDecorations(IDecoMD, V, BV);
     if (BV->isInst())
       addFPBuiltinDecoration(BM, Inst, static_cast<SPIRVInstruction *>(BV));
   }
@@ -3049,6 +3057,145 @@ bool LLVMToSPIRVBase::transDecoration(Value *V, SPIRVValue *BV) {
       transMetadataDecorations(GVDecoMD, BV);
 
   return true;
+}
+
+void LLVMToSPIRVBase::prepareCacheControlsTranslation(
+    Metadata *MD, Instruction *Inst, SPIRVBasicBlock *BB) {
+  if (!Inst->mayReadOrWriteMemory())
+    return;
+  auto *ArgDecoMD = dyn_cast<MDNode>(MD);
+  for (unsigned I = 0, E = ArgDecoMD->getNumOperands(); I != E; ++I) {
+    auto *DecoMD = dyn_cast<MDNode>(ArgDecoMD->getOperand(I));
+    // error
+    auto *KindMD = cast<ConstantAsMetadata>(DecoMD->getOperand(0));
+    auto *DecoKindConst = mdconst::dyn_extract<ConstantInt>(KindMD);
+    // error
+    const size_t NumOperands = DecoMD->getNumOperands();
+    // error
+    auto *LevelMD = cast<ConstantAsMetadata>(DecoMD->getOperand(1));
+    auto *ControlMD = cast<ConstantAsMetadata>(DecoMD->getOperand(2));
+    // error
+    const size_t TargetArgNo = mdconst::dyn_extract<ConstantInt>(
+        DecoMD->getOperand(3))->getZExtValue();
+    Value *PtrInstOp = Inst->getOperand(TargetArgNo);
+    IRBuilder Builder(Inst);
+    TypedPointerType *GEPTy =
+        cast<TypedPointerType>(Scavenger->getScavengedType(PtrInstOp));
+    auto *GEP = cast<Instruction>(
+        Builder.CreateConstGEP1_32(GEPTy->getElementType(), PtrInstOp, 0));
+    Inst->setOperand(TargetArgNo, GEP);
+    std::vector<Metadata *> OPs = { KindMD, LevelMD, ControlMD };
+    SmallVector<Metadata *, 4> MDs;
+    MDs.push_back(MDNode::get(Inst->getContext(), OPs));
+    MDNode *MDList = MDNode::get(Inst->getContext(), MDs);
+    GEP->setMetadata(SPIRV_MD_DECORATIONS, MDList);
+    Scavenger->getTypeAfterRules(GEP);
+    auto *BV = transValue(GEP, BB, false);
+  }
+}
+
+void LLVMToSPIRVBase::transCacheControlINTELDecorations(Metadata *MD, Value *V,
+                                                        SPIRVValue *BV) {
+  if (!BM->isAllowedToUseExtension(
+         ExtensionID::SPV_INTEL_cache_controls))
+    return;
+  if (!BV->isInst())
+    return;
+  SPIRVErrorLog &ErrLog = BV->getErrorLog();
+
+  auto *ArgDecoMD = dyn_cast<MDNode>(MD);
+  assert(ArgDecoMD && "Decoration list must be a metadata node");
+  for (unsigned I = 0, E = ArgDecoMD->getNumOperands(); I != E; ++I) {
+    auto *DecoMD = dyn_cast<MDNode>(ArgDecoMD->getOperand(I));
+    ErrLog.checkError(DecoMD, SPIRVEC_InvalidLlvmModule,
+                      "Decoration does not name metadata");
+
+    auto *DecoKindConst =
+        mdconst::dyn_extract<ConstantInt>(DecoMD->getOperand(0));
+    ErrLog.checkError(DecoKindConst, SPIRVEC_InvalidLlvmModule,
+                      "First operand of decoration must be the kind");
+
+    const size_t NumOperands = DecoMD->getNumOperands();
+    ErrLog.checkError(
+        NumOperands == 4, SPIRVEC_InvalidLlvmModule,
+        "Intel CacheControl decorations requires exactly 3 extra operands");
+
+    auto *CacheLevel =
+        mdconst::dyn_extract<ConstantInt>(DecoMD->getOperand(1));
+    auto *CacheControl =
+        mdconst::dyn_extract<ConstantInt>(DecoMD->getOperand(2));
+    ErrLog.checkError(CacheLevel, SPIRVEC_InvalidLlvmModule,
+                      "Intel CacheControl decoration cache level operand is "
+                      "required to be an integer");
+    ErrLog.checkError(CacheControl, SPIRVEC_InvalidLlvmModule,
+                      "Intel CacheControl decoration cache control operand is "
+                      "required to be an integer");
+
+    const size_t TargetArgNo = mdconst::dyn_extract<ConstantInt>(
+        DecoMD->getOperand(3))->getZExtValue();
+    auto *Inst = cast<Instruction>(V);
+    Value *PtrInstOp = Inst->getOperand(TargetArgNo);
+
+    // Create instruction one more time now using GEP as it's operand
+    auto *BI = static_cast<SPIRVInstruction *>(BV);
+    auto *BB = BI->getParent();
+    IRBuilder Builder(Inst);
+    Type *GEPTy = 
+        Scavenger->getScavengedType(PtrInstOp);
+    ValueMap.erase(V);
+    Value *GEP = Builder.CreateConstGEP1_32(GEPTy, PtrInstOp, 0);
+    Inst->setOperand(TargetArgNo, GEP);
+    auto Pred = [MD](unsigned MDKind, MDNode *Node) { return Node == MD; };
+    Inst->eraseMetadataIf(Pred);
+    BB->eraseInstruction(BI);
+
+    SPIRVValue *Target = transValue(GEP, BB, false, FuncTransMode::Pointer);
+    SPIRVValue *NewBI = transValue(Inst, BB, false);
+    ValueMap[V] = NewBI;
+    BV = NewBI;
+
+/*    SPIRVValue *Target = ValueMap[PtrInstOp];
+
+    auto OpCode = BI->getOpCode();
+    auto *BIType = BI->getType();
+    std::vector<SPIRVValue *> Ops;
+    for (size_t I = 0; I != cast<Instruction>(V)->getNumOperands(); ++I)
+      Ops.emplace_back(transValue(V, BB));
+
+    APInt ZeroInt = APInt::getZero(32);
+    auto *ZeroConst = transValue(Constant::getIntegerValue(
+          IntegerType::getInt32Ty(M->getContext()), ZeroInt), nullptr);
+//    auto *GEP = BB->addInstruction(
+//        SPIRVInstTemplateBase::create(OpPtrAccessChain, Target->getType(),
+//                                      BV->getId(), getVec(Target->getId(),
+//                                      ZeroConst->getId()), BB, BM), BI);
+    auto *GEP = BM->addPtrAccessChainInst(Target->getType(), Target,
+                                          getVec(ZeroConst), BB, false);
+    
+    auto Pos = std::find(Ops.begin(), Ops.end(), Target);
+    *Pos = GEP;
+    auto *NewBI = BM->addInstTemplate(OpCode, BM->getIds(Ops), BB, BIType);
+    Target = GEP;
+    ValueMap[V] = static_cast<SPIRVValue *>(NewBI);*/
+
+
+
+    auto DecoKind = static_cast<Decoration>(DecoKindConst->getZExtValue());
+    switch (static_cast<size_t>(DecoKind)) {
+    case DecorationCacheControlLoadINTEL: {
+      Target->addDecorate(new SPIRVDecorateCacheControlLoadINTEL(
+          Target, CacheLevel->getZExtValue(),
+          static_cast<LoadCacheControl>(CacheControl->getZExtValue())));
+      break;
+    }
+    case DecorationCacheControlStoreINTEL: {
+      Target->addDecorate(new SPIRVDecorateCacheControlStoreINTEL(
+          Target, CacheLevel->getZExtValue(),
+          static_cast<StoreCacheControl>(CacheControl->getZExtValue())));
+      break;
+    }
+    }
+  }
 }
 
 bool LLVMToSPIRVBase::transAlign(Value *V, SPIRVValue *BV) {
