@@ -3487,7 +3487,16 @@ Function *SPIRVToLLVM::transFunction(SPIRVFunction *BF, unsigned AS) {
             M, Intrinsic::memset, {FT->getParamType(0), FT->getParamType(2)})
             ->getName();
   }
-  if (FuncNameRef.consume_front("spirv.")) {
+  // Special handling: spirv.llvm_umul_with_overflow_* functions with bodies should
+  // NOT be transformed to llvm.umul.with.overflow.* intrinsics because the intrinsic
+  // handling code renames them to "old_llvm.umul.with.overflow.*" and creates
+  // undefined function references. Keep them as regular SPIR-V functions instead.
+  bool SkipNameTransform = false;
+  if (FuncNameRef.starts_with("spirv.llvm_umul_with_overflow_") && BF->getNumBasicBlock() > 0) {
+    SkipNameTransform = true;
+  }
+
+  if (!SkipNameTransform && FuncNameRef.consume_front("spirv.")) {
     FuncNameRef.consume_back(".volatile");
     FuncName = FuncNameRef.str();
     std::replace(FuncName.begin(), FuncName.end(), '_', '.');
@@ -3501,6 +3510,14 @@ Function *SPIRVToLLVM::transFunction(SPIRVFunction *BF, unsigned AS) {
   if (F->isIntrinsic()) {
     if (F->getIntrinsicID() != Intrinsic::umul_with_overflow)
       return F;
+    // For umul_with_overflow intrinsic, we need to create a new function with a
+    // non-uniqued struct type. This only applies to declarations; functions with
+    // bodies should not have been transformed to intrinsic names in the first place.
+    if (BF->getNumBasicBlock() > 0) {
+      // This shouldn't happen - umul functions with bodies should not reach here
+      // as they should keep their spirv.llvm_umul_with_overflow_* name
+      assert(false && "umul function with body should not be treated as intrinsic");
+    }
     std::string Name = F->getName().str();
     auto *ST = cast<StructType>(F->getReturnType());
     auto *FT = F->getFunctionType();
