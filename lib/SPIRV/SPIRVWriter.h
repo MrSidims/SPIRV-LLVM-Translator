@@ -258,6 +258,8 @@ private:
 
   void transFunction(Function *I);
   SPIRV::SPIRVLinkageTypeKind transLinkageType(const GlobalValue *GV);
+  void transLinkageAsUserSemantic(SPIRV::SPIRVEntry *BE,
+                                  const GlobalValue *GV);
 
   bool isAnyFunctionReachableFromFunction(
       const Function *FS,
