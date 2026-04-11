@@ -340,6 +340,12 @@ static cl::opt<bool> FnVarSpecEnable(
     cl::desc("Enable specialization of function variants according to "
              "SPV_INTEL_function_variants. Requires -r flag."));
 
+static cl::opt<bool> LowerCoopMatrixToIntrinsics(
+    "lower-coopmatrix-to-intrinsics",
+    cl::desc("Lower cooperative matrix ops to llvm.coopmatrix.* intrinsics "
+             "instead of __spirv_CooperativeMatrix* function calls"),
+    cl::init(false));
+
 static std::string removeExt(const std::string &FileName) {
   size_t Pos = FileName.find_last_of(".");
   if (Pos != std::string::npos)
@@ -913,6 +919,9 @@ int main(int Ac, char **Av) {
     Opts.setEmitFunctionPtrAddrSpace(true);
 
   Opts.setFnVarSpecEnable(FnVarSpecEnable);
+
+  if (LowerCoopMatrixToIntrinsics)
+    Opts.setCoopMatrixLowerToIntrinsics(true);
 
   if (!IsReverse &&
       (FnVarSpecEnable || FnVarCategory != 0 || FnVarFamily != 0 ||

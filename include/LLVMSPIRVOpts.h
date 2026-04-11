@@ -250,6 +250,13 @@ public:
   }
   BuiltinFormat getBuiltinFormat() const noexcept { return SPIRVBuiltinFormat; }
 
+  void setCoopMatrixLowerToIntrinsics(bool Value) noexcept {
+    CoopMatrixLowerToIntrinsics = Value;
+  }
+  bool shouldLowerCoopMatrixToIntrinsics() const noexcept {
+    return CoopMatrixLowerToIntrinsics;
+  }
+
   void setUseLLVMTarget(bool Flag) noexcept { UseLLVMTarget = Flag; }
   bool getUseLLVMTarget() const noexcept { return UseLLVMTarget; }
 
@@ -358,6 +365,9 @@ private:
   bool FnVarSpecEnable = false;
 
   BuiltinFormat SPIRVBuiltinFormat = BuiltinFormat::Function;
+
+  // Lower cooperative matrix ops to llvm.coopmatrix.* intrinsics
+  bool CoopMatrixLowerToIntrinsics = false;
 
   // Convert LLVM to SPIR-V using the LLVM SPIR-V Backend target
   bool UseLLVMTarget = false;

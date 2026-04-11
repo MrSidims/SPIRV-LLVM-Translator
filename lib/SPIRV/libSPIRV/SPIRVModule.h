@@ -601,6 +601,10 @@ public:
     return TranslationOpts.shouldEmitFunctionPtrAddrSpace();
   }
 
+  bool shouldLowerCoopMatrixToIntrinsics() const noexcept {
+    return TranslationOpts.shouldLowerCoopMatrixToIntrinsics();
+  }
+
   bool preserveAuxData() const noexcept {
     return TranslationOpts.preserveAuxData();
   }

@@ -69,6 +69,7 @@
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
@@ -2536,6 +2537,11 @@ Value *SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
       return mapValue(BV, Load);
     }
     case OpTypeCooperativeMatrixKHR:
+      if (BM->shouldLowerCoopMatrixToIntrinsics())
+        return mapValue(
+            BV, transCoopMatrixToIntrinsic(
+                    static_cast<SPIRVInstruction *>(BV), BB));
+      return mapValue(BV, transSPIRVBuiltinFromInst(CC, BB));
     case internal::OpTypeTaskSequenceINTEL:
       return mapValue(BV, transSPIRVBuiltinFromInst(CC, BB));
     default:
@@ -3967,10 +3973,144 @@ std::string getSPIRVFuncSuffix(SPIRVInstruction *BI) {
   return Suffix;
 }
 
+Value *SPIRVToLLVM::transCoopMatrixToIntrinsic(SPIRVInstruction *BI,
+                                               BasicBlock *BB) {
+  auto OC = BI->getOpCode();
+  IRBuilder<> Builder(BB);
+  auto *I32Ty = Type::getInt32Ty(*Context);
+
+  switch (static_cast<size_t>(OC)) {
+  case OpCooperativeMatrixLoadKHR: {
+    Type *RetTy = transType(BI->getType());
+    auto *TET = cast<TargetExtType>(RetTy);
+    auto Ops = BI->getOperands();
+    Value *Ptr = transValue(Ops[0], BB->getParent(), BB);
+    Value *Layout = transValue(Ops[1], BB->getParent(), BB);
+    Value *Stride = transValue(Ops[2], BB->getParent(), BB);
+
+    Type *OverloadedTys[] = {RetTy, Ptr->getType(), Stride->getType()};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_load, OverloadedTys);
+    Value *Args[] = {
+        Ptr, Layout, Stride,
+        ConstantInt::get(I32Ty, TET->getIntParameter(0)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(1)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(2)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(3))};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  case OpCooperativeMatrixStoreKHR: {
+    auto Ops = BI->getOperands();
+    Value *Ptr = transValue(Ops[0], BB->getParent(), BB);
+    Value *Matrix = transValue(Ops[1], BB->getParent(), BB);
+    Value *Layout = transValue(Ops[2], BB->getParent(), BB);
+    Value *Stride = transValue(Ops[3], BB->getParent(), BB);
+    auto *MatTy = cast<TargetExtType>(Matrix->getType());
+
+    Type *OverloadedTys[] = {Matrix->getType(), Ptr->getType(),
+                             Stride->getType()};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_store, OverloadedTys);
+    Value *Args[] = {
+        Matrix, Ptr, Layout, Stride,
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(0)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(1)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(2)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(3))};
+    return Builder.CreateCall(Fn, Args);
+  }
+
+  case OpCooperativeMatrixMulAddKHR: {
+    Type *RetTy = transType(BI->getType());
+    auto *RetTET = cast<TargetExtType>(RetTy);
+    auto Ops = BI->getOperands();
+    Value *A = transValue(Ops[0], BB->getParent(), BB);
+    Value *B = transValue(Ops[1], BB->getParent(), BB);
+    Value *C = transValue(Ops[2], BB->getParent(), BB);
+
+    uint32_t OperandsMask = 0;
+    if (Ops.size() > 3)
+      OperandsMask =
+          static_cast<SPIRVConstant *>(Ops[3])->getZExtIntValue();
+
+    auto *ATy = cast<TargetExtType>(A->getType());
+    unsigned K = ATy->getIntParameter(2); // cols of A = K
+
+    Type *OverloadedTys[] = {RetTy, A->getType(), B->getType()};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_muladd, OverloadedTys);
+    Value *Args[] = {
+        A, B, C,
+        ConstantInt::get(I32Ty, OperandsMask),
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(0)),
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(1)),
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(2)),
+        ConstantInt::get(I32Ty, K)};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  case OpCooperativeMatrixLengthKHR: {
+    auto Ops = BI->getOperands();
+    SPIRVType *CoopMatSpvTy =
+        static_cast<SPIRVType *>(BM->getEntry(Ops[0]->getId()));
+    Type *CoopMatLLVMTy = transType(CoopMatSpvTy);
+    auto *TET = cast<TargetExtType>(CoopMatLLVMTy);
+
+    Function *Fn =
+        Intrinsic::getOrInsertDeclaration(M, Intrinsic::coopmatrix_length, {});
+    Value *Args[] = {
+        ConstantInt::get(I32Ty, TET->getIntParameter(0)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(1)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(2)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(3))};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  case OpCompositeConstruct: {
+    Type *RetTy = transType(BI->getType());
+    auto *TET = cast<TargetExtType>(RetTy);
+    auto Ops = BI->getOperands();
+    Value *Scalar = transValue(Ops[0], BB->getParent(), BB);
+
+    Type *OverloadedTys[] = {RetTy, Scalar->getType()};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_construct, OverloadedTys);
+    Value *Args[] = {
+        Scalar,
+        ConstantInt::get(I32Ty, TET->getIntParameter(0)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(1)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(2)),
+        ConstantInt::get(I32Ty, TET->getIntParameter(3))};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  default:
+    llvm_unreachable("Unexpected cooperative matrix opcode");
+  }
+}
+
 Instruction *SPIRVToLLVM::transSPIRVBuiltinFromInst(SPIRVInstruction *BI,
                                                     BasicBlock *BB) {
   assert(BB && "Invalid BB");
   const auto OC = BI->getOpCode();
+
+  // Intercept cooperative matrix ops when lowering to intrinsics.
+  if (BM->shouldLowerCoopMatrixToIntrinsics()) {
+    if (OC == OpCooperativeMatrixLoadKHR ||
+        OC == OpCooperativeMatrixStoreKHR ||
+        OC == OpCooperativeMatrixMulAddKHR ||
+        OC == OpCooperativeMatrixLengthKHR)
+      return cast<Instruction>(transCoopMatrixToIntrinsic(BI, BB));
+  }
 
   bool AddRetTypePostfix = false;
   switch (static_cast<size_t>(OC)) {
