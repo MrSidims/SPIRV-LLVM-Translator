@@ -2537,11 +2537,10 @@ Value *SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
       return mapValue(BV, Load);
     }
     case OpTypeCooperativeMatrixKHR:
-      if (BM->shouldLowerCoopMatrixToIntrinsics())
-        return mapValue(
-            BV, transCoopMatrixToIntrinsic(
-                    static_cast<SPIRVInstruction *>(BV), BB));
-      return mapValue(BV, transSPIRVBuiltinFromInst(CC, BB));
+      // Cooperative matrix types must always use intrinsics.
+      return mapValue(
+          BV, transCoopMatrixToIntrinsic(
+                  static_cast<SPIRVInstruction *>(BV), BB));
     case internal::OpTypeTaskSequenceINTEL:
       return mapValue(BV, transSPIRVBuiltinFromInst(CC, BB));
     default:
@@ -2551,6 +2550,12 @@ Value *SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
 
   case OpCompositeExtract: {
     SPIRVCompositeExtract *CE = static_cast<SPIRVCompositeExtract *>(BV);
+    // Cooperative matrix types must always use intrinsics - they cannot be
+    // handled by CreateExtractValue since they are target types, not structs.
+    if (CE->getComposite()->getType()->isTypeCooperativeMatrixKHR()) {
+      return mapValue(BV, transCoopMatrixToIntrinsic(
+                              static_cast<SPIRVInstruction *>(BV), BB));
+    }
     IRBuilder<> Builder(*Context);
     if (BB) {
       Builder.SetInsertPoint(BB);
@@ -2579,6 +2584,12 @@ Value *SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
 
   case OpCompositeInsert: {
     auto *CI = static_cast<SPIRVCompositeInsert *>(BV);
+    // Cooperative matrix types must always use intrinsics - they cannot be
+    // handled by CreateInsertValue since they are target types, not structs.
+    if (CI->getComposite()->getType()->isTypeCooperativeMatrixKHR()) {
+      return mapValue(BV, transCoopMatrixToIntrinsic(
+                              static_cast<SPIRVInstruction *>(BV), BB));
+    }
     IRBuilder<> Builder(*Context);
     if (BB) {
       Builder.SetInsertPoint(BB);
@@ -4039,16 +4050,21 @@ Value *SPIRVToLLVM::transCoopMatrixToIntrinsic(SPIRVInstruction *BI,
     auto *ATy = cast<TargetExtType>(A->getType());
     unsigned K = ATy->getIntParameter(2); // cols of A = K
 
+    // muladd signature:
+    // (A, B, C, operands_mask(imm), scope, M, N, K, a_interp(imm), b_interp(imm), c_interp(imm))
     Type *OverloadedTys[] = {RetTy, A->getType(), B->getType()};
     Function *Fn = Intrinsic::getOrInsertDeclaration(
         M, Intrinsic::coopmatrix_muladd, OverloadedTys);
     Value *Args[] = {
         A, B, C,
         ConstantInt::get(I32Ty, OperandsMask),
-        ConstantInt::get(I32Ty, RetTET->getIntParameter(0)),
-        ConstantInt::get(I32Ty, RetTET->getIntParameter(1)),
-        ConstantInt::get(I32Ty, RetTET->getIntParameter(2)),
-        ConstantInt::get(I32Ty, K)};
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(0)),  // scope
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(1)),  // M
+        ConstantInt::get(I32Ty, RetTET->getIntParameter(2)),  // N
+        ConstantInt::get(I32Ty, K),                           // K
+        ConstantInt::get(I32Ty, 0),                           // a_interp (no reinterpret)
+        ConstantInt::get(I32Ty, 0),                           // b_interp (no reinterpret)
+        ConstantInt::get(I32Ty, 0)};                          // c_interp (no reinterpret)
     auto *Call = Builder.CreateCall(Fn, Args);
     setName(Call, BI);
     return Call;
@@ -4088,6 +4104,56 @@ Value *SPIRVToLLVM::transCoopMatrixToIntrinsic(SPIRVInstruction *BI,
         ConstantInt::get(I32Ty, TET->getIntParameter(1)),
         ConstantInt::get(I32Ty, TET->getIntParameter(2)),
         ConstantInt::get(I32Ty, TET->getIntParameter(3))};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  case OpCompositeExtract: {
+    // OpCompositeExtract on cooperative matrix -> llvm.coopmatrix.extract
+    auto *CEI = static_cast<SPIRVCompositeExtract *>(BI);
+    Value *Matrix = transValue(CEI->getComposite(), BB->getParent(), BB);
+    auto *MatTy = cast<TargetExtType>(Matrix->getType());
+    Type *ElemTy = MatTy->getTypeParameter(0);
+
+    auto Indices = CEI->getIndices();
+    assert(Indices.size() == 1 && "Expected single index for coopmatrix extract");
+    Value *Idx = ConstantInt::get(I32Ty, Indices[0]);
+
+    Type *OverloadedTys[] = {ElemTy, MatTy};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_extract, OverloadedTys);
+    Value *Args[] = {
+        Matrix, Idx,
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(0)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(1)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(2)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(3))};
+    auto *Call = Builder.CreateCall(Fn, Args);
+    setName(Call, BI);
+    return Call;
+  }
+
+  case OpCompositeInsert: {
+    // OpCompositeInsert on cooperative matrix -> llvm.coopmatrix.insert
+    auto *CII = static_cast<SPIRVCompositeInsert *>(BI);
+    Value *Object = transValue(CII->getObject(), BB->getParent(), BB);
+    Value *Matrix = transValue(CII->getComposite(), BB->getParent(), BB);
+    auto *MatTy = cast<TargetExtType>(Matrix->getType());
+
+    auto Indices = CII->getIndices();
+    assert(Indices.size() == 1 && "Expected single index for coopmatrix insert");
+    Value *Idx = ConstantInt::get(I32Ty, Indices[0]);
+
+    Type *OverloadedTys[] = {MatTy, Object->getType()};
+    Function *Fn = Intrinsic::getOrInsertDeclaration(
+        M, Intrinsic::coopmatrix_insert, OverloadedTys);
+    Value *Args[] = {
+        Matrix, Object, Idx,
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(0)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(1)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(2)),
+        ConstantInt::get(I32Ty, MatTy->getIntParameter(3))};
     auto *Call = Builder.CreateCall(Fn, Args);
     setName(Call, BI);
     return Call;

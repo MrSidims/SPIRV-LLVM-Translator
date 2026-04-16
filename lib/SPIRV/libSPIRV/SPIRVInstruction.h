@@ -2166,6 +2166,7 @@ protected:
     assert(getValueType(Composite)->isTypeArray() ||
            getValueType(Composite)->isTypeStruct() ||
            getValueType(Composite)->isTypeVector() ||
+           getValueType(Composite)->isTypeCooperativeMatrixKHR() ||
            getValueType(Composite)->isTypeUntypedPointerKHR());
   }
 };
@@ -2193,6 +2194,7 @@ protected:
     assert(getValueType(Composite)->isTypeArray() ||
            getValueType(Composite)->isTypeStruct() ||
            getValueType(Composite)->isTypeVector() ||
+           getValueType(Composite)->isTypeCooperativeMatrixKHR() ||
            getValueType(Composite)->isTypeUntypedPointerKHR());
     assert(Type == getValueType(Composite));
   }
